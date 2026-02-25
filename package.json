@@ -1,0 +1,64 @@
+{
+  "name": "clawreins",
+  "version": "0.0.1-beta",
+  "description": "ClawReins is the intervention layer for OpenClaw.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "clawreins": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "toolshield:sync": "bash ./scripts/sync-toolshield-openclaw.sh",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "security",
+    "middleware",
+    "ai-agents",
+    "openclaw",
+    "human-in-the-loop",
+    "runtime-interception",
+    "zero-trust"
+  ],
+  "author": "Sandro Munda <sandro@munda.me>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SeyZ/clawreins.git"
+  },
+  "dependencies": {
+    "inquirer": "^9.2.12",
+    "chalk": "^4.1.2",
+    "winston": "^3.11.0",
+    "commander": "^11.1.0",
+    "fs-extra": "^11.2.0"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.10.5",
+    "@types/fs-extra": "^11.0.4",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "prettier": "^3.1.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "openclaw.plugin.json"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "dist/plugin/index.js"
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+FROM python:3.12
+
+WORKDIR /app
+ENV TOOLSHIELD_REPO_ROOT=/app
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone OpenHands (pinned version)
+RUN git clone --branch 0.54.0 --single-branch --depth 1 \
+    https://github.com/OpenHands/OpenHands.git /opt/openhands
+
+# Clone MCPMark
+RUN git clone --depth 1 \
+    https://github.com/eval-sys/mcpmark.git /app/mcpmark-main
+
+# Copy full repo
+COPY . /app/
+
+# Patch OpenHands MCP client
+RUN cp /app/agentrisk/client.py /opt/openhands/openhands/mcp/client.py
+
+# Install dependencies
+RUN pip install --no-cache-dir -e . && \
+    pip install --no-cache-dir -e "/opt/openhands" && \
+    pip install --no-cache-dir pyyaml "setuptools>=78.1" "fitz>=0.0.1.dev2"

@@ -1,0 +1,12 @@
+[llm.agent]
+model = "openrouter/anthropic/claude-sonnet-4.5"
+base_url = "https://openrouter.ai/api/v1"
+api_key = ""
+max_output_tokens = 16384
+
+
+[llm.env]
+model = "openrouter/anthropic/claude-sonnet-4.5"
+base_url = "https://openrouter.ai/api/v1"
+api_key = ""
+max_output_tokens = 16384

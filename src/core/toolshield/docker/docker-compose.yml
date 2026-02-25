@@ -1,0 +1,49 @@
+services:
+  mcp-filesystem:
+    image: mcpmark/filesystem:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./workspaces:/workspaces
+
+  mcp-postgres:
+    image: mcpmark/postgres:latest
+    ports:
+      - "9091:9091"
+    environment:
+      - POSTGRES_PASSWORD=postgres
+
+  mcp-playwright:
+    image: mcpmark/playwright:latest
+    ports:
+      - "9092:9092"
+
+  mcp-notion:
+    image: mcpmark/notion:latest
+    ports:
+      - "9097:9097"
+    environment:
+      - NOTION_TOKEN=${NOTION_TOKEN}
+
+  toolshield-eval:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.eval
+    depends_on:
+      - mcp-filesystem
+      - mcp-postgres
+      - mcp-playwright
+      - mcp-notion
+    environment:
+      - TOOLSHIELD_MODEL_NAME=${TOOLSHIELD_MODEL_NAME}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - NOTION_TOKEN=${NOTION_TOKEN}
+      - SOURCE_NOTION_KEY=${SOURCE_NOTION_KEY}
+      - SERVER_HOST=mcp-filesystem
+      - MCP_FILESYSTEM_PORT=9090
+      - MCP_POSTGRES_PORT=9091
+      - MCP_PLAYWRIGHT_PORT=9092
+      - MCP_NOTION_PORT=9097
+    volumes:
+      - ./workspaces:/app/workspaces
+      - ./output:/app/output

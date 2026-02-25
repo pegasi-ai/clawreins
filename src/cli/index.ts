@@ -1,0 +1,59 @@
+#!/usr/bin/env node
+
+/**
+ * ClawReins CLI Entry Point
+ */
+
+import { Command } from 'commander';
+import { initWizard } from './init';
+import { policyCommand } from './commands/policy';
+import { statsCommand } from './commands/stats';
+import { auditCommand } from './commands/audit';
+import { resetCommand } from './commands/reset';
+import { disableCommand, enableCommand } from './commands/toggle';
+import { toolShieldSyncCommand } from './commands/toolshield-sync';
+
+const program = new Command();
+
+program.name('clawreins').description('ClawReins is the intervention layer for OpenClaw.').version('1.0.0');
+
+// Initialize ClawReins with OpenClaw
+program
+  .command('init')
+  .description('Setup ClawReins with OpenClaw (interactive wizard)')
+  .action(initWizard);
+
+// Manage security policies
+program.command('policy').description('Manage security policies').action(policyCommand);
+
+// View statistics
+program.command('stats').description('View security statistics').action(statsCommand);
+
+// View audit trail
+program
+  .command('audit')
+  .description('View decision audit trail')
+  .option('-n, --lines <number>', 'Number of recent decisions to show', '50')
+  .action(auditCommand);
+
+// Reset stats
+program.command('reset').description('Reset statistics').action(resetCommand);
+
+// Disable ClawReins
+program.command('disable').description('Temporarily disable ClawReins').action(disableCommand);
+
+// Enable ClawReins
+program.command('enable').description('Re-enable ClawReins').action(enableCommand);
+
+// Sync ToolShield experiences into OpenClaw AGENTS.md
+program
+  .command('toolshield-sync')
+  .description('Install/sync ToolShield guardrails into OpenClaw AGENTS.md')
+  .option('--model <name>', 'ToolShield bundled model', 'claude-sonnet-4.5')
+  .option('--agents-file <path>', 'Custom AGENTS.md target path')
+  .option('--bundled-dir <path>', 'Path to bundled ToolShield source root')
+  .option('--no-install', 'Do not auto-install ToolShield if missing')
+  .option('--append', 'Append without unloading existing ToolShield section')
+  .action(toolShieldSyncCommand);
+
+program.parse();

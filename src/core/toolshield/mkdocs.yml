@@ -1,0 +1,51 @@
+site_name: ToolShield
+site_description: "Training-Free Defense for Tool-Using AI Agents"
+site_url: https://toolshield.readthedocs.io
+repo_url: https://github.com/CHATS-lab/ToolShield
+repo_name: CHATS-lab/ToolShield
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.expand
+    - toc.integrate
+
+markdown_extensions:
+  - tables
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - CLI Reference: cli.md
+  - Agent Guides:
+      - Claude Code: agents/claude-code.md
+      - Codex: agents/codex.md
+      - Cursor: agents/cursor.md
+      - OpenHands: agents/openhands.md
+      - OpenClaw: agents/openclaw.md
+  - Benchmark: benchmark.md

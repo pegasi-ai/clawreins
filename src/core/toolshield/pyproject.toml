@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling<1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "toolshield"
+version = "0.1.1"
+description = "ToolShield: Training-Free Defense for Tool-Using AI Agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Xu Li", email = "lixu20040929@gmail.com" },
+    { name = "Simon Yu", email = "simon011130@gmail.com" },
+]
+keywords = ["llm", "safety", "mcp", "agents", "toolshield"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "openai>=1.0",
+    "requests>=2.28",
+    "tqdm>=4.66",
+    "json-repair>=0.20",
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+eval = ["pyyaml", "setuptools>=78.1", "fitz>=0.0.1.dev2"]
+dev = ["ruff", "pytest"]
+
+[project.scripts]
+toolshield = "toolshield.cli:main"
+
+[project.urls]
+Homepage = "https://unsafer-in-many-turns.github.io"
+Repository = "https://github.com/CHATS-Lab/ToolShield"
+Dataset = "https://huggingface.co/datasets/CHATS-Lab/MT-AgentRisk"
+
+[tool.hatch.build.targets.wheel]
+packages = ["toolshield"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
