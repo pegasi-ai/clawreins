@@ -1,0 +1,20 @@
+{
+  "id": "clawreins",
+  "name": "ClawReins",
+  "description": "ClawReins is the intervention layer for OpenClaw.",
+  "version": "1.0.0",
+  "main": "dist/plugin/index.js",
+  "hooks": ["before_tool_call"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "defaultAction": {
+        "type": "string",
+        "enum": ["ALLOW", "DENY", "ASK"],
+        "default": "ASK",
+        "description": "Default action for unknown tools"
+      }
+    }
+  }
+}
