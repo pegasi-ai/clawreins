@@ -1,13 +1,18 @@
 /**
- * ClawReins Init Wizard
- * Interactive setup for ClawReins with OpenClaw
+ * ClawReins Init/Configure Wizard
+ * Interactive setup for ClawReins with OpenClaw + automation-friendly mode
  */
 
 import inquirer from 'inquirer';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
-import { isOpenClawInstalled, registerPlugin, isPluginRegistered } from '../plugin/config-manager';
+import {
+  isOpenClawInstalled,
+  registerPlugin,
+  isPluginRegistered,
+  getOpenClawPaths,
+} from '../plugin/config-manager';
 import { PolicyStore, PersistedPolicy } from '../storage/PolicyStore';
 import { logger, CLAWREINS_DATA_DIR } from '../core/Logger';
 import { DEFAULT_POLICY } from '../config';
@@ -15,19 +20,27 @@ import { SecurityRule } from '../types';
 import { getProtectedModules } from '../plugin/tool-interceptor';
 import { syncToolShieldDefaults } from '../toolshield/sync';
 
-const SECURITY_PRESETS = {
+type SecurityLevel = 'permissive' | 'balanced' | 'strict' | 'custom';
+
+interface InitPreset {
+  name: string;
+  description: string;
+  policy: Record<string, Record<string, SecurityRule>>;
+}
+
+const SECURITY_PRESETS: Record<Exclude<SecurityLevel, 'custom'>, InitPreset> = {
   permissive: {
     name: '🟢 Permissive',
     description: 'read: ALLOW, write: ASK, delete: ASK, bash: ASK',
     policy: {
       FileSystem: {
-        read: { action: 'ALLOW' as const, description: 'Safe read-only' },
-        write: { action: 'ASK' as const, description: 'Needs approval' },
-        delete: { action: 'ASK' as const, description: 'Requires confirmation' },
+        read: { action: 'ALLOW', description: 'Safe read-only' },
+        write: { action: 'ASK', description: 'Needs approval' },
+        delete: { action: 'ASK', description: 'Requires confirmation' },
       },
       Shell: {
-        bash: { action: 'ASK' as const, description: 'RCE risk' },
-        exec: { action: 'ASK' as const, description: 'RCE risk' },
+        bash: { action: 'ASK', description: 'RCE risk' },
+        exec: { action: 'ASK', description: 'RCE risk' },
       },
     },
   },
@@ -41,67 +54,241 @@ const SECURITY_PRESETS = {
     description: 'read: ASK, write: ASK, delete: DENY, bash: DENY',
     policy: {
       FileSystem: {
-        read: { action: 'ASK' as const, description: 'Confirm all reads' },
-        write: { action: 'ASK' as const, description: 'Needs approval' },
-        delete: { action: 'DENY' as const, description: 'Strictly prohibited' },
+        read: { action: 'ASK', description: 'Confirm all reads' },
+        write: { action: 'ASK', description: 'Needs approval' },
+        delete: { action: 'DENY', description: 'Strictly prohibited' },
       },
       Shell: {
-        bash: { action: 'DENY' as const, description: 'RCE blocked' },
-        exec: { action: 'DENY' as const, description: 'RCE blocked' },
+        bash: { action: 'DENY', description: 'RCE blocked' },
+        exec: { action: 'DENY', description: 'RCE blocked' },
       },
     },
   },
 };
 
-export async function initWizard(): Promise<void> {
-  console.log('');
-  console.log(chalk.bold.cyan('═'.repeat(80)));
-  console.log(chalk.bold.cyan('   🦞 + 🪢 ClawReins Setup Wizard'));
-  console.log(chalk.bold.cyan('   ClawReins is the intervention layer for OpenClaw.'));
-  console.log(chalk.bold.cyan('═'.repeat(80)));
-  console.log('');
+const DEFAULT_MODULES = ['FileSystem', 'Shell', 'Browser'];
 
-  try {
-    // Step 1: Detect OpenClaw
-    console.log(chalk.bold('Step 1: Detecting OpenClaw...'));
-    const isInstalled = await isOpenClawInstalled();
+export interface InitWizardOptions {
+  nonInteractive?: boolean;
+  json?: boolean;
+  securityLevel?: string;
+  modules?: string;
+  syncToolshield?: boolean;
+}
 
-    if (!isInstalled) {
-      console.log('');
-      console.log(chalk.red('❌ OpenClaw is not installed or not found.'));
-      console.log('');
-      console.log(chalk.yellow('Please install OpenClaw first:'));
-      console.log(chalk.dim('  npm install -g openclaw'));
-      console.log('');
-      process.exit(1);
+export interface InitSuccessOutput {
+  ok: true;
+  configPath: string;
+  policyPath: string;
+  openclawHome: string;
+  restartRecommended: boolean;
+  warnings: string[];
+  nextSteps: string[];
+}
+
+export interface InitFailureOutput {
+  ok: false;
+  error: {
+    message: string;
+    code: string;
+    details?: Record<string, unknown>;
+  };
+}
+
+class InitWizardError extends Error {
+  code: string;
+  details?: Record<string, unknown>;
+
+  constructor(message: string, code: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'InitWizardError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function disableLoggerOutput(): void {
+  for (const transport of logger.transports) {
+    transport.silent = true;
+  }
+}
+
+function parseSecurityLevel(value: string): SecurityLevel {
+  if (value === 'permissive' || value === 'balanced' || value === 'strict' || value === 'custom') {
+    return value;
+  }
+  throw new InitWizardError('Invalid security level', 'E_INVALID_OPTION', {
+    option: 'securityLevel',
+    value,
+    allowed: ['permissive', 'balanced', 'strict', 'custom'],
+  });
+}
+
+function parseModules(input: string | undefined): string[] {
+  if (!input) {
+    return [];
+  }
+  return input
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildPolicy(securityLevel: SecurityLevel, selectedModules: string[]): PersistedPolicy {
+  const modules: Record<string, Record<string, SecurityRule>> = {};
+  const selectedPreset = securityLevel === 'custom' ? null : SECURITY_PRESETS[securityLevel];
+
+  if (selectedPreset) {
+    selectedModules.forEach((moduleName) => {
+      if (selectedPreset.policy[moduleName]) {
+        modules[moduleName] = selectedPreset.policy[moduleName];
+      } else {
+        modules[moduleName] = {
+          '*': { action: 'ASK', description: 'Default security' },
+        };
+      }
+    });
+  }
+
+  return {
+    version: '1.0.0',
+    defaultAction: 'ASK',
+    modules,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function formatError(error: unknown): InitFailureOutput {
+  if (error instanceof InitWizardError) {
+    return {
+      ok: false,
+      error: {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+      },
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      ok: false,
+      error: {
+        message: error.message,
+        code: 'E_INIT_FAILED',
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    error: {
+      message: 'Unknown initialization error',
+      code: 'E_INIT_FAILED',
+    },
+  };
+}
+
+function findPluginManifestPath(pluginDir: string): string | null {
+  const candidates = [pluginDir, path.resolve(__dirname, '..', '..')];
+
+  for (const candidate of candidates) {
+    const manifestPath = path.join(candidate, 'openclaw.plugin.json');
+    if (fs.existsSync(manifestPath)) {
+      return manifestPath;
     }
+  }
 
+  return null;
+}
+
+function getNextSteps(toolShieldSkipped: boolean): string[] {
+  const nextSteps = [
+    'Restart OpenClaw gateway: openclaw gateway restart',
+    'Edit security policy: clawreins policy',
+    'View audit trail: clawreins audit',
+  ];
+
+  if (toolShieldSkipped) {
+    nextSteps.splice(2, 0, 'Sync ToolShield guardrails: clawreins toolshield-sync');
+  }
+
+  return nextSteps;
+}
+
+export async function initWizard(options: InitWizardOptions = {}): Promise<InitSuccessOutput> {
+  const nonInteractive = options.nonInteractive === true;
+  const jsonMode = options.json === true;
+  const warnings: string[] = [];
+  const paths = getOpenClawPaths();
+
+  if (!jsonMode) {
+    console.log('');
+    console.log(chalk.bold.cyan('═'.repeat(80)));
+    console.log(chalk.bold.cyan('   🦞 + 🪢 ClawReins Setup Wizard'));
+    console.log(chalk.bold.cyan('   ClawReins is the intervention layer for OpenClaw.'));
+    console.log(chalk.bold.cyan('═'.repeat(80)));
+    console.log('');
+  }
+
+  // Step 1: Detect OpenClaw
+  if (!jsonMode) {
+    console.log(chalk.bold('Step 1: Detecting OpenClaw...'));
+  }
+
+  const isInstalled = await isOpenClawInstalled();
+  if (!isInstalled) {
+    throw new InitWizardError('OpenClaw is not installed or not found.', 'E_OPENCLAW_NOT_FOUND', {
+      openclawHome: paths.openclawHome,
+    });
+  }
+
+  if (!jsonMode) {
     console.log(chalk.green('✅ OpenClaw detected'));
     console.log('');
+  }
 
-    // Check if already registered
-    const alreadyRegistered = await isPluginRegistered();
-    if (alreadyRegistered) {
-      const { shouldReconfigure } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'shouldReconfigure',
-          message: 'ClawReins is already configured. Reconfigure?',
-          default: false,
-        },
-      ]);
+  // Check if already registered
+  const alreadyRegistered = await isPluginRegistered();
+  if (alreadyRegistered && !nonInteractive) {
+    const { shouldReconfigure } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'shouldReconfigure',
+        message: 'ClawReins is already configured. Reconfigure?',
+        default: false,
+      },
+    ]);
 
-      if (!shouldReconfigure) {
+    if (!shouldReconfigure) {
+      if (!jsonMode) {
         console.log(chalk.yellow('Setup cancelled.'));
-        return;
       }
+      return {
+        ok: true,
+        configPath: paths.openclawConfig,
+        policyPath: PolicyStore.getPath(),
+        openclawHome: paths.openclawHome,
+        restartRecommended: false,
+        warnings,
+        nextSteps: ['Run again when you want to update the configuration.'],
+      };
+    }
+  }
+
+  // Step 2: Choose security level
+  let securityLevel: SecurityLevel;
+  if (nonInteractive) {
+    const fromEnv = process.env.CLAWREINS_SECURITY_LEVEL;
+    securityLevel = parseSecurityLevel(options.securityLevel || fromEnv || 'balanced');
+  } else {
+    if (!jsonMode) {
+      console.log(chalk.bold('Step 2: Choose your security level'));
+      console.log('');
     }
 
-    // Step 2: Choose security level
-    console.log(chalk.bold('Step 2: Choose your security level'));
-    console.log('');
-
-    const { securityLevel } = await inquirer.prompt([
+    const answer = await inquirer.prompt([
       {
         type: 'list',
         name: 'securityLevel',
@@ -128,15 +315,47 @@ export async function initWizard(): Promise<void> {
       },
     ]);
 
-    console.log('');
+    securityLevel = parseSecurityLevel(answer.securityLevel);
 
-    // Step 3: Select modules to protect
-    console.log(chalk.bold('Step 3: Select which OpenClaw tools to protect'));
-    console.log('');
+    if (!jsonMode) {
+      console.log('');
+    }
+  }
 
-    const availableModules = getProtectedModules();
+  // Step 3: Select modules to protect
+  const availableModules = getProtectedModules();
+  let selectedModules: string[] = [];
 
-    const { selectedModules } = await inquirer.prompt([
+  if (nonInteractive) {
+    const explicitModules = parseModules(options.modules || process.env.CLAWREINS_MODULES);
+
+    if (securityLevel === 'custom' && explicitModules.length === 0) {
+      throw new InitWizardError(
+        'Custom security level requires explicit modules in non-interactive mode.',
+        'E_MISSING_REQUIRED',
+        {
+          required: ['--modules <comma-separated>', 'or CLAWREINS_MODULES'],
+          securityLevel,
+        }
+      );
+    }
+
+    selectedModules = explicitModules.length > 0 ? explicitModules : DEFAULT_MODULES;
+
+    const unknownModules = selectedModules.filter((moduleName) => !availableModules.includes(moduleName));
+    if (unknownModules.length > 0) {
+      throw new InitWizardError('One or more modules are invalid.', 'E_INVALID_MODULES', {
+        invalidModules: unknownModules,
+        allowedModules: availableModules,
+      });
+    }
+  } else {
+    if (!jsonMode) {
+      console.log(chalk.bold('Step 3: Select which OpenClaw tools to protect'));
+      console.log('');
+    }
+
+    const answer = await inquirer.prompt([
       {
         type: 'checkbox',
         name: 'selectedModules',
@@ -144,105 +363,143 @@ export async function initWizard(): Promise<void> {
         choices: availableModules.map((mod) => ({
           name: mod,
           value: mod,
-          checked: ['FileSystem', 'Shell', 'Browser'].includes(mod), // Default selections
+          checked: DEFAULT_MODULES.includes(mod),
         })),
       },
     ]);
 
-    console.log('');
+    selectedModules = answer.selectedModules;
 
-    // Step 4: Create the policy
-    console.log(chalk.bold('Step 4: Creating security policy...'));
-
-    const selectedPreset = SECURITY_PRESETS[securityLevel as keyof typeof SECURITY_PRESETS];
-    const modules: Record<string, Record<string, SecurityRule>> = {};
-
-    if (securityLevel !== 'custom' && selectedPreset) {
-      // Apply preset to selected modules only
-      selectedModules.forEach((moduleName: string) => {
-        if (selectedPreset.policy[moduleName as keyof typeof selectedPreset.policy]) {
-          modules[moduleName] =
-            selectedPreset.policy[moduleName as keyof typeof selectedPreset.policy];
-        } else {
-          // Default to ASK for modules not in preset
-          modules[moduleName] = {
-            '*': { action: 'ASK', description: 'Default security' },
-          };
-        }
-      });
+    if (!jsonMode) {
+      console.log('');
     }
+  }
 
-    const policy: PersistedPolicy = {
-      version: '1.0.0',
-      defaultAction: 'ASK',
-      modules,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+  // Step 4: Create policy
+  if (!jsonMode) {
+    console.log(chalk.bold('Step 4: Creating security policy...'));
+  }
 
-    await PolicyStore.save(policy);
+  const policy = buildPolicy(securityLevel, selectedModules);
+  await PolicyStore.save(policy);
+
+  if (!jsonMode) {
     console.log(chalk.green(`✅ Policy saved to ${PolicyStore.getPath()}`));
     console.log('');
+  }
 
-    // Step 5: Install plugin in OpenClaw
+  // Step 5: Register plugin in OpenClaw config
+  if (!jsonMode) {
     console.log(chalk.bold('Step 5: Registering with OpenClaw...'));
 
-    // Find the project root (where openclaw.plugin.json lives)
-    const pluginRoot = path.resolve(__dirname, '..', '..');
-    const manifestPath = path.join(pluginRoot, 'openclaw.plugin.json');
-    const manifestExists = await fs.pathExists(manifestPath);
-
-    if (manifestExists) {
+    const manifestPath = findPluginManifestPath(paths.pluginDir);
+    if (manifestPath) {
+      const pluginRoot = path.dirname(manifestPath);
       console.log(chalk.dim(`  Plugin manifest found: ${manifestPath}`));
       console.log(chalk.dim(`  Install with: openclaw plugins install --link ${pluginRoot}`));
     }
+  }
 
-    await registerPlugin(policy.defaultAction);
+  await registerPlugin(policy.defaultAction);
+
+  if (!jsonMode) {
     console.log(chalk.green('✅ ClawReins registered in OpenClaw config'));
     console.log('');
+  }
 
-    // Step 6: Enable ToolShield defaults (automatic)
+  // Step 6: ToolShield defaults
+  const shouldSyncToolshield =
+    nonInteractive ? options.syncToolshield === true : true;
+
+  if (!jsonMode) {
     console.log(chalk.bold('Step 6: Enabling ToolShield defaults...'));
+  }
+
+  let toolShieldSkipped = false;
+  if (shouldSyncToolshield) {
     const toolShieldResult = await syncToolShieldDefaults();
     if (toolShieldResult.synced) {
-      console.log(chalk.green(`✅ ${toolShieldResult.message}`));
-      if (toolShieldResult.installedNow) {
-        console.log(chalk.dim('  ToolShield was installed automatically via pip.'));
+      if (!jsonMode) {
+        console.log(chalk.green(`✅ ${toolShieldResult.message}`));
+        if (toolShieldResult.installedNow) {
+          console.log(chalk.dim('  ToolShield was installed automatically via pip.'));
+        }
       }
     } else {
-      console.log(chalk.yellow(`⚠️  ${toolShieldResult.message}`));
-      console.log(
-        chalk.dim('  You can retry manually with: clawreins toolshield-sync')
-      );
+      warnings.push(toolShieldResult.message);
+      if (!jsonMode) {
+        console.log(chalk.yellow(`⚠️  ${toolShieldResult.message}`));
+        console.log(chalk.dim('  You can retry manually with: clawreins toolshield-sync'));
+      }
     }
-    console.log('');
+  } else {
+    toolShieldSkipped = true;
+    warnings.push('ToolShield sync skipped in non-interactive mode.');
+    if (!jsonMode) {
+      console.log(chalk.yellow('⚠️  ToolShield sync skipped in non-interactive mode.'));
+      console.log(chalk.dim('  You can run: clawreins toolshield-sync'));
+    }
+  }
 
-    // Success summary
+  if (!jsonMode) {
+    console.log('');
     console.log(chalk.bold.green('═'.repeat(80)));
     console.log(chalk.bold.green('   ✅ ClawReins installed successfully!'));
     console.log(chalk.bold.green('═'.repeat(80)));
     console.log('');
 
     console.log(chalk.bold('Configuration:'));
-    console.log(chalk.dim(`  Policy:     ${PolicyStore.getPath()}`));
-    console.log(chalk.dim(`  Audit log:  ${CLAWREINS_DATA_DIR}/decisions.jsonl`));
-    console.log(chalk.dim(`  Stats:      ${CLAWREINS_DATA_DIR}/stats.json`));
+    console.log(chalk.dim(`  OpenClaw home: ${paths.openclawHome}`));
+    console.log(chalk.dim(`  OpenClaw config: ${paths.openclawConfig}`));
+    console.log(chalk.dim(`  Plugin dir:      ${paths.pluginDir}`));
+    console.log(chalk.dim(`  Policy:          ${PolicyStore.getPath()}`));
+    console.log(chalk.dim(`  Audit log:       ${CLAWREINS_DATA_DIR}/decisions.jsonl`));
+    console.log(chalk.dim(`  Stats:           ${CLAWREINS_DATA_DIR}/stats.json`));
     console.log('');
 
     console.log(chalk.bold('Next steps:'));
-    if (manifestExists) {
-      console.log(
-        chalk.cyan('  1. Install plugin:') +
-          chalk.dim(`    openclaw plugins install --link ${pluginRoot}`)
-      );
-    }
-    console.log(chalk.cyan('  2. Edit policy:') + chalk.dim('       clawreins policy'));
-    console.log(chalk.cyan('  3. Sync ToolShield:') + chalk.dim('   clawreins toolshield-sync'));
-    console.log(chalk.cyan('  4. View audit trail:') + chalk.dim('  clawreins audit'));
+    console.log(chalk.cyan('  1. Restart gateway:') + chalk.dim('  openclaw gateway restart'));
+    console.log(chalk.cyan('  2. Edit policy:') + chalk.dim('      clawreins policy'));
+    console.log(chalk.cyan('  3. View audit trail:') + chalk.dim('  clawreins audit'));
     console.log('');
+  }
+
+  return {
+    ok: true,
+    configPath: paths.openclawConfig,
+    policyPath: PolicyStore.getPath(),
+    openclawHome: paths.openclawHome,
+    restartRecommended: true,
+    warnings,
+    nextSteps: getNextSteps(toolShieldSkipped),
+  };
+}
+
+export async function runInitCommand(options: InitWizardOptions = {}): Promise<void> {
+  const jsonMode = options.json === true;
+
+  if (jsonMode) {
+    disableLoggerOutput();
+  }
+
+  try {
+    const result = await initWizard(options);
+    if (jsonMode) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    }
   } catch (error) {
-    console.error(chalk.red('❌ Setup failed:'), error);
-    logger.error('Init wizard failed', { error });
-    process.exit(1);
+    const formatted = formatError(error);
+
+    if (jsonMode) {
+      process.stdout.write(`${JSON.stringify(formatted)}\n`);
+    } else {
+      console.error(chalk.red('❌ Setup failed:'), formatted.error.message);
+      logger.error('Init/configure command failed', {
+        code: formatted.error.code,
+        details: formatted.error.details,
+      });
+    }
+
+    process.exitCode = 1;
   }
 }

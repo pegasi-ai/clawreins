@@ -8,8 +8,26 @@ import path from 'path';
 import os from 'os';
 import { logger } from '../core/Logger';
 
-const OPENCLAW_HOME = process.env.OPENCLAW_HOME || path.join(os.homedir(), '.openclaw');
-const OPENCLAW_CONFIG_FILE = path.join(OPENCLAW_HOME, 'openclaw.json');
+export interface OpenClawPaths {
+  openclawHome: string;
+  openclawConfig: string;
+  pluginId: string;
+  pluginDir: string;
+}
+
+export function getOpenClawPaths(): OpenClawPaths {
+  const openclawHome = process.env.OPENCLAW_HOME || path.join(os.homedir(), '.openclaw');
+  const openclawConfig = process.env.OPENCLAW_CONFIG || path.join(openclawHome, 'openclaw.json');
+  const pluginId = process.env.OPENCLAW_PLUGIN_ID || 'clawreins';
+  const pluginDir = process.env.OPENCLAW_PLUGIN_DIR || path.join(openclawHome, 'extensions', pluginId);
+
+  return {
+    openclawHome,
+    openclawConfig,
+    pluginId,
+    pluginDir,
+  };
+}
 
 export interface OpenClawConfig {
   plugins?: {
@@ -29,20 +47,22 @@ export interface OpenClawConfig {
  * Check if OpenClaw is installed
  */
 export async function isOpenClawInstalled(): Promise<boolean> {
-  return await fs.pathExists(OPENCLAW_HOME);
+  const { openclawHome } = getOpenClawPaths();
+  return await fs.pathExists(openclawHome);
 }
 
 /**
  * Load OpenClaw's main configuration
  */
 export async function loadOpenClawConfig(): Promise<OpenClawConfig | null> {
+  const { openclawConfig } = getOpenClawPaths();
   try {
-    if (!(await fs.pathExists(OPENCLAW_CONFIG_FILE))) {
+    if (!(await fs.pathExists(openclawConfig))) {
       return null;
     }
-    return await fs.readJson(OPENCLAW_CONFIG_FILE);
+    return await fs.readJson(openclawConfig);
   } catch (error) {
-    logger.error('Failed to load OpenClaw config', { error });
+    logger.error('Failed to load OpenClaw config', { error, path: openclawConfig });
     return null;
   }
 }
@@ -51,28 +71,25 @@ export async function loadOpenClawConfig(): Promise<OpenClawConfig | null> {
  * Save OpenClaw's main configuration
  */
 export async function saveOpenClawConfig(config: OpenClawConfig): Promise<void> {
+  const { openclawConfig } = getOpenClawPaths();
   try {
-    await fs.ensureDir(OPENCLAW_HOME);
-    await fs.writeJson(OPENCLAW_CONFIG_FILE, config, { spaces: 2 });
-    logger.info('OpenClaw config saved', { path: OPENCLAW_CONFIG_FILE });
+    await fs.ensureDir(path.dirname(openclawConfig));
+    await fs.writeJson(openclawConfig, config, { spaces: 2 });
+    logger.info('OpenClaw config saved', { path: openclawConfig });
   } catch (error) {
-    logger.error('Failed to save OpenClaw config', { error });
+    logger.error('Failed to save OpenClaw config', { error, path: openclawConfig });
     throw error;
   }
 }
 
 /**
- * Register ClawReins plugin in OpenClaw's config (plugins.entries.clawreins)
+ * Register ClawReins plugin in OpenClaw's config (plugins.entries.<pluginId>)
  */
 export async function registerPlugin(
   defaultAction: 'ALLOW' | 'DENY' | 'ASK' = 'ASK'
 ): Promise<void> {
-  const config = await loadOpenClawConfig();
-
-  if (!config) {
-    logger.warn('OpenClaw config not found, skipping plugin registration');
-    return;
-  }
+  const { pluginId } = getOpenClawPaths();
+  const config = (await loadOpenClawConfig()) || {};
 
   if (!config.plugins || typeof config.plugins !== 'object') {
     config.plugins = {};
@@ -82,34 +99,42 @@ export async function registerPlugin(
     config.plugins.entries = {};
   }
 
-  config.plugins.entries.clawreins = {
+  config.plugins.entries[pluginId] = {
     enabled: true,
     config: { defaultAction },
   };
 
   await saveOpenClawConfig(config);
-  logger.info('Registered ClawReins in OpenClaw config (plugins.entries.clawreins)');
+  logger.info('Registered plugin in OpenClaw config', {
+    pluginId,
+    path: getOpenClawPaths().openclawConfig,
+  });
 }
 
 /**
  * Unregister ClawReins plugin from OpenClaw's config
  */
 export async function unregisterPlugin(): Promise<void> {
+  const { pluginId } = getOpenClawPaths();
   const config = await loadOpenClawConfig();
 
   if (!config?.plugins?.entries) {
     return;
   }
 
-  delete config.plugins.entries.clawreins;
+  delete config.plugins.entries[pluginId];
   await saveOpenClawConfig(config);
-  logger.info('Unregistered ClawReins plugin from OpenClaw config');
+  logger.info('Unregistered plugin from OpenClaw config', {
+    pluginId,
+    path: getOpenClawPaths().openclawConfig,
+  });
 }
 
 /**
  * Check if ClawReins is registered in OpenClaw
  */
 export async function isPluginRegistered(): Promise<boolean> {
+  const { pluginId } = getOpenClawPaths();
   const config = await loadOpenClawConfig();
-  return !!config?.plugins?.entries?.clawreins;
+  return !!config?.plugins?.entries?.[pluginId];
 }

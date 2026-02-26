@@ -5,7 +5,7 @@
  */
 
 import { Command } from 'commander';
-import { initWizard } from './init';
+import { runInitCommand } from './init';
 import { policyCommand } from './commands/policy';
 import { statsCommand } from './commands/stats';
 import { auditCommand } from './commands/audit';
@@ -17,11 +17,17 @@ const program = new Command();
 
 program.name('clawreins').description('ClawReins is the intervention layer for OpenClaw.').version('1.0.0');
 
-// Initialize ClawReins with OpenClaw
+// Initialize/configure ClawReins with OpenClaw
 program
   .command('init')
+  .alias('configure')
   .description('Setup ClawReins with OpenClaw (interactive wizard)')
-  .action(initWizard);
+  .option('--non-interactive', 'Run without prompts using defaults/flags')
+  .option('--json', 'Output machine-readable JSON only')
+  .option('--security-level <level>', 'Security preset: permissive|balanced|strict|custom')
+  .option('--modules <modules>', 'Comma-separated module list (required for custom in non-interactive mode)')
+  .option('--sync-toolshield', 'Sync ToolShield during non-interactive mode')
+  .action(runInitCommand);
 
 // Manage security policies
 program.command('policy').description('Manage security policies').action(policyCommand);

@@ -22,6 +22,8 @@ export type { SessionInjectionResult } from './storage/BrowserSessionStore';
 // Plugin
 export { default as ClawReinsPlugin } from './plugin/index';
 export type { ClawReinsConfig } from './plugin/index';
+export { ClawReinsManifest } from './plugin/index';
+export type { ClawReinsPluginManifest } from './plugin/index';
 export {
   createToolCallHook,
   getToolMapping,

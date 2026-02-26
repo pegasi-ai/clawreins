@@ -1,6 +1,6 @@
 {
   "name": "clawreins",
-  "version": "0.0.1-beta",
+  "version": "0.0.3-beta.1",
   "description": "ClawReins is the intervention layer for OpenClaw.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test test/**/*.test.mjs",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
     "toolshield:sync": "bash ./scripts/sync-toolshield-openclaw.sh",
