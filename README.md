@@ -26,6 +26,14 @@ ClawReins is AI safety middleware for [OpenClaw](https://github.com/openclaw/ope
 
 **OpenClaw cannot be its own watchdog. Neither can any CUA.**
 
+## Demo
+
+![ClawReins demo](./clawreins-demo.gif)
+
+ClawReins prevents destructive actions by requiring explicit, time-boxed approval and logging every decision.  
+High-impact action gating: explicit approval -> safe stop -> audit trail.  
+Gmail automation is gated: ClawReins blocks destructive inbox actions unless you explicitly approve (`YES`/`ALLOW`).
+
 ## Why?
 
 OpenClaw can execute shell commands, modify files, and access your APIs. OS-level isolation (containers, VMs) protects your **host machine**, but it doesn't protect the **services your agent has access to**.
@@ -52,14 +60,14 @@ ClawReins solves this by hooking into OpenClaw's `before_tool_call` plugin event
 ### Installation
 
 ```bash
-# Install globally
-npm install -g clawreins
+# Install plugin
+openclaw plugins install clawreins@beta
 
-# Run interactive setup
-clawreins init
+# Run setup
+node ~/.openclaw/extensions/clawreins/dist/cli/index.js init
 
-# Restart OpenClaw
-openclaw restart
+# Reload gateway
+openclaw gateway restart
 ```
 
 Done! ClawReins is now protecting your OpenClaw instance.
@@ -192,6 +200,8 @@ Default policy (Balanced):
 
 ```bash
 clawreins init        # Interactive setup wizard
+clawreins configure   # Alias for init (OpenClaw configure entrypoint)
+clawreins configure --non-interactive --json  # Automation-friendly machine output
 clawreins policy      # Manage security policies
 clawreins stats       # View statistics
 clawreins audit       # View decision history

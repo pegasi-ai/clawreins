@@ -13,11 +13,41 @@ import { Interceptor } from '../core/Interceptor';
 import { PolicyStore } from '../storage/PolicyStore';
 import { logger } from '../core/Logger';
 import { createToolCallHook, CLAWREINS_RESPOND_TOOL } from './tool-interceptor';
+import path from 'path';
+import { readFileSync } from 'fs';
 
 export interface ClawReinsConfig {
   enabled?: boolean;
   defaultAction?: 'ALLOW' | 'DENY' | 'ASK';
 }
+
+export interface ClawReinsPluginManifest {
+  id: string;
+  displayName: string;
+  version: string;
+  configure: {
+    command: string;
+  };
+}
+
+function getPackageVersion(): string {
+  try {
+    const packageJsonPath = path.join(__dirname, '..', '..', 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version?: string };
+    return packageJson.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+export const ClawReinsManifest: ClawReinsPluginManifest = {
+  id: 'clawreins',
+  displayName: 'Clawreins',
+  version: getPackageVersion(),
+  configure: {
+    command: 'clawreins configure',
+  },
+};
 
 /**
  * OpenClaw plugin API surface used by ClawReins.
@@ -100,6 +130,7 @@ function tryOn(
 export default {
   id: 'clawreins',
   name: 'ClawReins',
+  manifest: ClawReinsManifest,
 
   register(api: OpenClawPluginApi): void {
     logger.info('ClawReins plugin loading...');
