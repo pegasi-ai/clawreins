@@ -34,6 +34,14 @@ ClawReins prevents destructive actions by requiring explicit, time-boxed approva
 High-impact action gating: explicit approval -> safe stop -> audit trail.  
 Gmail automation is gated: ClawReins blocks destructive inbox actions unless you explicitly approve (`YES`/`ALLOW`).
 
+## In The News
+
+- TechCrunch (February 23, 2026): [A Meta AI security researcher said an OpenClaw agent ran amok on her inbox](https://techcrunch.com/2026/02/23/a-meta-ai-security-researcher-said-an-openclaw-agent-ran-amok-on-her-inbox/)
+
+## Intercept Example
+
+![ClawReins intercept example](./intercept_example.pmg)
+
 ## Why?
 
 OpenClaw can execute shell commands, modify files, and access your APIs. OS-level isolation (containers, VMs) protects your **host machine**, but it doesn't protect the **services your agent has access to**.
@@ -50,6 +58,29 @@ ClawReins solves this by hooking into OpenClaw's `before_tool_call` plugin event
 - 💬 **Channel Support** - Works in terminal, WhatsApp, Telegram via `clawreins_respond` tool
 - 📊 **Full Audit Trail** - Every decision logged (JSON Lines format)
 - ⚡ **Zero Latency** - Runs in-process, no external policy API calls
+
+## Destructive Action Intercept (Pre-Execution)
+
+ClawReins now applies deterministic pre-execution gating for destructive actions.
+
+- Destructive calls are intercepted before execution and forced through HITL approval
+- `HIGH` severity supports `YES` / `ALLOW`
+- `CATASTROPHIC` severity requires explicit `CONFIRM-*` token
+- Fail-secure behavior: if approval tooling is unavailable, action stays blocked
+
+Environment toggles:
+
+```bash
+CLAWREINS_DESTRUCTIVE_GATING=on   # default on
+CLAWREINS_BULK_THRESHOLD=20       # default 20
+CLAWREINS_CONFIRM_THRESHOLD=80    # optional, irreversibility confirm threshold
+```
+
+Demo script (GIF-friendly):
+
+```bash
+npm run demo:destructive
+```
 
 ## Quick Start
 

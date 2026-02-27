@@ -12,6 +12,7 @@
     "test": "npm run build && node --test test/**/*.test.mjs",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
+    "demo:destructive": "ts-node scripts/demo-destructive.ts",
     "toolshield:sync": "bash ./scripts/sync-toolshield-openclaw.sh",
     "prepublishOnly": "npm run build"
   },
