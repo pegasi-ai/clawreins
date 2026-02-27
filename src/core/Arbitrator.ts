@@ -13,6 +13,7 @@ import chalk from 'chalk';
 import { ExecutionContext } from '../types';
 import { logger } from './Logger';
 import { approvalQueue } from './ApprovalQueue';
+import { DecisionLog } from '../storage/DecisionLog';
 
 export class Arbitrator {
   async judge(context: ExecutionContext): Promise<boolean> {
@@ -66,6 +67,8 @@ export class Arbitrator {
       console.log(chalk.red('✗ Action REJECTED by user\n'));
     }
 
+    await this.logApprovalDecision(context, answer.decision ? 'yes' : 'no', answer.decision);
+
     return answer.decision;
   }
 
@@ -95,12 +98,23 @@ export class Arbitrator {
       console.log(chalk.red('✗ Action REJECTED (confirmation token mismatch)\n'));
     }
 
+    await this.logApprovalDecision(context, 'confirm', approved, String(answer.typed || ''));
+
     return approved;
   }
 
   private judgeChannel(context: ExecutionContext): boolean {
     const { sessionKey, moduleName, methodName } = context;
     const strict = context.intervention?.requiresExplicitConfirmation === true;
+    const requiresRespondToolApproval = context.intervention?.requiresRespondToolApproval === true;
+
+    if (requiresRespondToolApproval && !context.respondToolAvailable) {
+      logger.warn(`ASK policy → blocked (respond tool unavailable for destructive action)`, {
+        sessionKey,
+        action: `${moduleName}.${methodName}`,
+      });
+      return false;
+    }
 
     if (!strict && approvalQueue.hasBlanketAllow(sessionKey!, moduleName, methodName)) {
       logger.info(`ASK policy → auto-approved (blanket allow): ${moduleName}.${methodName}()`, {
@@ -116,7 +130,7 @@ export class Arbitrator {
       return true;
     }
 
-    if (!strict && approvalQueue.consumePending(sessionKey!, moduleName, methodName)) {
+    if (!strict && !requiresRespondToolApproval && approvalQueue.consumePending(sessionKey!, moduleName, methodName)) {
       logger.info(
         `ASK policy → approved via channel (retry-as-approval): ${moduleName}.${methodName}()`,
         { sessionKey }
@@ -128,6 +142,7 @@ export class Arbitrator {
       requiresExplicitConfirmation: strict,
       actionSummary: context.intervention?.actionSummary,
       confirmationToken: context.intervention?.confirmationToken,
+      allowRetryAsApproval: !requiresRespondToolApproval,
     });
 
     logger.info(`ASK policy → awaiting channel approval: ${moduleName}.${methodName}()`, {
@@ -165,6 +180,10 @@ export class Arbitrator {
     if (context.rule.description) {
       console.log(chalk.bold.cyan('⚠️  Risk:'), chalk.yellow(context.rule.description));
     }
+    if (context.intervention?.actionSummary) {
+      console.log(chalk.bold.cyan('🧾 Intent Summary:'));
+      console.log(chalk.gray(this.indentJson(context.intervention.actionSummary)));
+    }
 
     console.log(chalk.bold.cyan('📋 Arguments:'));
 
@@ -186,5 +205,30 @@ export class Arbitrator {
       .split('\n')
       .map((line) => '  ' + line)
       .join('\n');
+  }
+
+  private async logApprovalDecision(
+    context: ExecutionContext,
+    decision: 'yes' | 'no' | 'allow' | 'confirm',
+    approved: boolean,
+    confirmation?: string
+  ): Promise<void> {
+    try {
+      await DecisionLog.append({
+        timestamp: new Date().toISOString(),
+        module: context.moduleName,
+        method: context.methodName,
+        args: context.args,
+        decision: approved ? 'APPROVED' : 'REJECTED',
+        decisionTime: 0,
+        reason: 'approval_decision',
+        eventType: 'approval_decision',
+        approved,
+        decisionInput: decision,
+        confirmation,
+      });
+    } catch {
+      // best-effort only
+    }
   }
 }

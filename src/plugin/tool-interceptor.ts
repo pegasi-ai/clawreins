@@ -12,6 +12,15 @@ import { MemoryRiskForecaster, MemoryRiskAssessment } from '../core/MemoryRiskFo
 import { trustRateLimiter } from '../core/TrustRateLimiter';
 import { InterventionMetadata } from '../types';
 import { BrowserSessionStore } from '../storage/BrowserSessionStore';
+import {
+  classifyDestructiveAction,
+  DestructiveClassification,
+  getBulkThreshold,
+  hashArgs,
+  isDestructiveGatingEnabled,
+} from '../core/DestructiveClassifier';
+import { DecisionLog } from '../storage/DecisionLog';
+import crypto from 'crypto';
 
 /**
  * Tool name for the custom clawreins_respond tool.
@@ -46,11 +55,21 @@ const TOOL_TO_MODULE: Record<string, { module: string; method: string }> = {
   list_sessions: { module: 'Gateway', method: 'listSessions' },
   list_nodes: { module: 'Gateway', method: 'listNodes' },
   send_message: { module: 'Gateway', method: 'sendMessage' },
+  // Gmail-style names used in demos/integrations
+  'gmail.deletemessages': { module: 'Gmail', method: 'deleteMessages' },
+  'gmail.emptytrash': { module: 'Gmail', method: 'emptyTrash' },
+  'gmail.deletelabel': { module: 'Gmail', method: 'deleteLabel' },
 };
 
 const FORCE_ASK_IRREVERSIBILITY_THRESHOLD = 55;
-const EXPLICIT_CONFIRM_IRREVERSIBILITY_THRESHOLD = 75;
+const EXPLICIT_CONFIRM_IRREVERSIBILITY_THRESHOLD = ((): number => {
+  const raw = process.env.CLAWREINS_CONFIRM_THRESHOLD;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 80;
+})();
 const EXPLICIT_CONFIRM_MEMORY_THRESHOLD = 85;
+const DESTRUCTIVE_GATING_ENABLED = isDestructiveGatingEnabled();
+const DESTRUCTIVE_BULK_THRESHOLD = getBulkThreshold();
 const memoryForecaster = new MemoryRiskForecaster();
 
 export interface BeforeToolCallEvent {
@@ -114,6 +133,29 @@ export function createToolCallHook(
     }
 
     const irreversibility = scoreIrreversibility(moduleName, methodName, params);
+    const destructiveClassification: DestructiveClassification | undefined = DESTRUCTIVE_GATING_ENABLED
+      ? classifyDestructiveAction(toolName, params, {
+          moduleName,
+          methodName,
+          bulkThreshold: DESTRUCTIVE_BULK_THRESHOLD,
+        })
+      : undefined;
+
+    if (destructiveClassification?.isDestructive) {
+      logInterceptEvent({
+        eventType: 'destructive_detected',
+        moduleName,
+        methodName,
+        toolName,
+        params,
+        severity: destructiveClassification.severity,
+        reasons: destructiveClassification.reasons,
+        bulkCount: destructiveClassification.bulkCount,
+        target: destructiveClassification.target,
+        argsHash: hashArgs(params),
+      });
+    }
+
     const sessionKeyForMemory = ctx.sessionKey || `local:${ctx.agentId || 'default'}`;
     const memoryRisk = memoryForecaster.assess(
       sessionKeyForMemory,
@@ -123,15 +165,47 @@ export function createToolCallHook(
       irreversibility
     );
     const intervention = buildInterventionMetadata(
+      moduleName,
+      methodName,
       toolName,
       params,
       irreversibility,
       memoryRisk,
+      destructiveClassification?.isDestructive ? destructiveClassification : undefined,
       sessionKeyForMemory
     );
 
+    if (destructiveClassification?.isDestructive && intervention?.actionSummary) {
+      logInterceptEvent({
+        eventType: 'approval_requested',
+        moduleName,
+        methodName,
+        toolName,
+        params,
+        severity: destructiveClassification.severity,
+        reasons: destructiveClassification.reasons,
+        bulkCount: destructiveClassification.bulkCount,
+        target: destructiveClassification.target,
+        summary: intervention.actionSummary,
+        requireToken: intervention.confirmationToken,
+      });
+    }
+
     try {
       await interceptor.evaluate(moduleName, methodName, [params], ctx.sessionKey, intervention);
+      if (destructiveClassification?.isDestructive) {
+        logInterceptEvent({
+          eventType: 'tool_executed',
+          moduleName,
+          methodName,
+          toolName,
+          params,
+          severity: destructiveClassification.severity,
+          reasons: destructiveClassification.reasons,
+          bulkCount: destructiveClassification.bulkCount,
+          target: destructiveClassification.target,
+        });
+      }
       return shouldReturnParams ? { params } : {};
     } catch (err: unknown) {
       const reason =
@@ -139,19 +213,61 @@ export function createToolCallHook(
           ? err.message
           : `${moduleName}.${methodName}() blocked by ClawReins policy`;
       logger.warn(`Blocking ${toolName}: ${reason}`);
+      if (destructiveClassification?.isDestructive) {
+        logInterceptEvent({
+          eventType: 'tool_blocked',
+          moduleName,
+          methodName,
+          toolName,
+          params,
+          severity: destructiveClassification.severity,
+          reasons: destructiveClassification.reasons,
+          bulkCount: destructiveClassification.bulkCount,
+          target: destructiveClassification.target,
+          summary: reason,
+        });
+      }
       return { block: true, blockReason: reason };
     }
   };
 }
 
 function buildInterventionMetadata(
+  moduleName: string,
+  methodName: string,
   toolName: string,
   params: Record<string, unknown>,
   irreversibility: IrreversibilityAssessment,
   memoryRisk: MemoryRiskAssessment,
+  destructive: DestructiveClassification | undefined,
   sessionKey: string
 ): InterventionMetadata | undefined {
   const intervention: InterventionMetadata = {};
+
+  if (destructive?.isDestructive) {
+    intervention.forceAsk = true;
+    intervention.requiresRespondToolApproval = true;
+    intervention.destructiveSeverity = destructive.severity;
+    intervention.destructiveReasons = destructive.reasons;
+    intervention.destructiveBulkCount = destructive.bulkCount;
+    intervention.destructiveTarget = destructive.target;
+
+    if (destructive.severity === 'CATASTROPHIC') {
+      intervention.requiresExplicitConfirmation = true;
+      intervention.confirmationToken =
+        intervention.confirmationToken || generateConfirmationToken(moduleName, methodName);
+    }
+
+    intervention.actionSummary = buildDestructiveSummary(
+      moduleName,
+      methodName,
+      destructive,
+      intervention.confirmationToken
+    );
+    intervention.interventionReason =
+      'Pre-execution destructive action intercept triggered; explicit human authorization required.';
+    intervention.overrideDescription = intervention.actionSummary;
+  }
 
   const challenge = detectBrowserChallenge(toolName, params);
   if (challenge.level === 'likely') {
@@ -181,7 +297,12 @@ function buildInterventionMetadata(
 
   if (irreversibility.score >= EXPLICIT_CONFIRM_IRREVERSIBILITY_THRESHOLD) {
     intervention.requiresExplicitConfirmation = true;
-    intervention.actionSummary = irreversibility.summary;
+    if (!intervention.confirmationToken) {
+      intervention.confirmationToken = generateConfirmationToken(moduleName, methodName);
+    }
+    if (!intervention.actionSummary) {
+      intervention.actionSummary = irreversibility.summary;
+    }
     intervention.interventionReason =
       'Irreversible action detected. Requires explicit token confirmation, not YES/NO.';
   }
@@ -203,10 +324,15 @@ function buildInterventionMetadata(
       ? `Predicted N+1 danger paths: ${topPaths}.`
       : 'Memory drift indicates unsafe next-step trajectory.';
 
-    intervention.actionSummary = memoryRisk.summary;
+    if (!intervention.actionSummary) {
+      intervention.actionSummary = memoryRisk.summary;
+    }
 
     if (memoryRisk.overallRisk >= EXPLICIT_CONFIRM_MEMORY_THRESHOLD) {
       intervention.requiresExplicitConfirmation = true;
+      if (!intervention.confirmationToken) {
+        intervention.confirmationToken = generateConfirmationToken(moduleName, methodName);
+      }
     }
   }
 
@@ -232,6 +358,96 @@ function buildInterventionMetadata(
   }
 
   return intervention;
+}
+
+function generateConfirmationToken(moduleName: string, methodName: string): string {
+  const seed = `${moduleName}.${methodName}:${Date.now()}:${Math.random()}`;
+  const digest = crypto.createHash('sha1').update(seed).digest('hex').slice(0, 6).toUpperCase();
+  return `CONFIRM-${digest}`;
+}
+
+function buildDestructiveSummary(
+  moduleName: string,
+  methodName: string,
+  classification: DestructiveClassification,
+  confirmationToken?: string
+): string {
+  const lines = [
+    `⚠ CLAWREINS INTERCEPT (${classification.severity})`,
+    `Tool: ${moduleName}.${methodName}`,
+  ];
+
+  if (classification.target) {
+    lines.push(`Target: ${classification.target}`);
+  }
+  if (classification.bulkCount !== undefined) {
+    lines.push(`Bulk: ${classification.bulkCount.toLocaleString()} items`);
+  }
+
+  lines.push(`Reasons: ${classification.reasons.join(', ') || 'destructive_signal'}`);
+  lines.push(
+    `Require: ${
+      classification.severity === 'CATASTROPHIC'
+        ? confirmationToken || 'CONFIRM-XXXXXX'
+        : 'YES or ALLOW'
+    }`
+  );
+  return lines.join('\n');
+}
+
+interface InterceptEventInput {
+  eventType:
+    | 'destructive_detected'
+    | 'approval_requested'
+    | 'approval_decision'
+    | 'tool_executed'
+    | 'tool_blocked';
+  moduleName: string;
+  methodName: string;
+  toolName: string;
+  params: Record<string, unknown>;
+  severity?: 'HIGH' | 'CATASTROPHIC';
+  reasons?: string[];
+  bulkCount?: number;
+  target?: string;
+  argsHash?: string;
+  summary?: string;
+  requireToken?: string;
+  approved?: boolean;
+  decisionInput?: 'yes' | 'allow' | 'no' | 'confirm';
+  confirmation?: string;
+}
+
+function logInterceptEvent(input: InterceptEventInput): void {
+  const defaultDecisionByEvent: Record<InterceptEventInput['eventType'], 'ALLOWED' | 'APPROVED' | 'REJECTED' | 'BLOCKED'> = {
+    destructive_detected: 'BLOCKED',
+    approval_requested: 'BLOCKED',
+    approval_decision: input.approved ? 'APPROVED' : 'REJECTED',
+    tool_executed: 'ALLOWED',
+    tool_blocked: 'BLOCKED',
+  };
+
+  void DecisionLog.append({
+    timestamp: new Date().toISOString(),
+    module: input.moduleName,
+    method: input.methodName,
+    args: [input.params],
+    decision: defaultDecisionByEvent[input.eventType],
+    decisionTime: 0,
+    reason: input.eventType,
+    eventType: input.eventType,
+    tool: input.toolName,
+    severity: input.severity,
+    reasons: input.reasons,
+    bulkCount: input.bulkCount,
+    target: input.target,
+    argsHash: input.argsHash,
+    summary: input.summary,
+    requireToken: input.requireToken,
+    approved: input.approved,
+    decisionInput: input.decisionInput,
+    confirmation: input.confirmation,
+  });
 }
 
 /**
@@ -260,6 +476,15 @@ function handleRespondTool(
             `${p.moduleName}.${p.methodName} requires ${p.confirmationToken || 'CONFIRM'} (${p.actionSummary || 'no summary'})`
         )
         .join(' | ');
+      logInterceptEvent({
+        eventType: 'approval_decision',
+        moduleName: 'ClawReins',
+        methodName: 'approval',
+        toolName: CLAWREINS_RESPOND_TOOL,
+        params,
+        approved: false,
+        decisionInput: 'yes',
+      });
       return {
         block: true,
         blockReason:
@@ -271,10 +496,28 @@ function handleRespondTool(
 
     if (!approvalQueue.hasPending(sessionKey)) {
       logger.info(`[${CLAWREINS_RESPOND_TOOL}] No pending approvals for session`, { sessionKey });
+      logInterceptEvent({
+        eventType: 'approval_decision',
+        moduleName: 'ClawReins',
+        methodName: 'approval',
+        toolName: CLAWREINS_RESPOND_TOOL,
+        params,
+        approved: false,
+        decisionInput: 'yes',
+      });
       return { block: true, blockReason: 'No pending approvals to approve.' };
     }
     const count = approvalQueue.approve(sessionKey);
     logger.info(`[${CLAWREINS_RESPOND_TOOL}] APPROVED`, { sessionKey, count });
+    logInterceptEvent({
+      eventType: 'approval_decision',
+      moduleName: 'ClawReins',
+      methodName: 'approval',
+      toolName: CLAWREINS_RESPOND_TOOL,
+      params,
+      approved: true,
+      decisionInput: 'yes',
+    });
     return { block: true, blockReason: 'Approved. Retry the blocked tool.' };
   }
 
@@ -282,6 +525,15 @@ function handleRespondTool(
     const confirmation =
       typeof params.confirmation === 'string' ? params.confirmation.trim() : '';
     if (!confirmation) {
+      logInterceptEvent({
+        eventType: 'approval_decision',
+        moduleName: 'ClawReins',
+        methodName: 'approval',
+        toolName: CLAWREINS_RESPOND_TOOL,
+        params,
+        approved: false,
+        decisionInput: 'confirm',
+      });
       return {
         block: true,
         blockReason:
@@ -291,6 +543,16 @@ function handleRespondTool(
 
     const count = approvalQueue.confirm(sessionKey, confirmation);
     if (count === 0) {
+      logInterceptEvent({
+        eventType: 'approval_decision',
+        moduleName: 'ClawReins',
+        methodName: 'approval',
+        toolName: CLAWREINS_RESPOND_TOOL,
+        params,
+        approved: false,
+        decisionInput: 'confirm',
+        confirmation,
+      });
       return {
         block: true,
         blockReason: `No pending strict approvals matched token ${confirmation}.`,
@@ -302,6 +564,16 @@ function handleRespondTool(
       confirmation,
       count,
     });
+    logInterceptEvent({
+      eventType: 'approval_decision',
+      moduleName: 'ClawReins',
+      methodName: 'approval',
+      toolName: CLAWREINS_RESPOND_TOOL,
+      params,
+      approved: true,
+      decisionInput: 'confirm',
+      confirmation,
+    });
     return { block: true, blockReason: 'Explicitly confirmed. Retry the blocked tool.' };
   }
 
@@ -309,12 +581,30 @@ function handleRespondTool(
     const count = approvalQueue.deny(sessionKey);
     trustRateLimiter.recordDenial(sessionKey);
     logger.info(`[${CLAWREINS_RESPOND_TOOL}] DENIED`, { sessionKey, count });
+    logInterceptEvent({
+      eventType: 'approval_decision',
+      moduleName: 'ClawReins',
+      methodName: 'approval',
+      toolName: CLAWREINS_RESPOND_TOOL,
+      params,
+      approved: false,
+      decisionInput: 'no',
+    });
     return { block: true, blockReason: 'Denied. Do NOT retry the blocked tool.' };
   }
 
   if (decision === 'allow') {
     const strictPending = approvalQueue.getStrictPending(sessionKey);
     if (strictPending.length > 0) {
+      logInterceptEvent({
+        eventType: 'approval_decision',
+        moduleName: 'ClawReins',
+        methodName: 'approval',
+        toolName: CLAWREINS_RESPOND_TOOL,
+        params,
+        approved: false,
+        decisionInput: 'allow',
+      });
       return {
         block: true,
         blockReason:
@@ -325,6 +615,15 @@ function handleRespondTool(
     const pending = approvalQueue.getPendingActions(sessionKey);
     if (pending.length === 0) {
       logger.info(`[${CLAWREINS_RESPOND_TOOL}] No pending approvals for ALLOW`, { sessionKey });
+      logInterceptEvent({
+        eventType: 'approval_decision',
+        moduleName: 'ClawReins',
+        methodName: 'approval',
+        toolName: CLAWREINS_RESPOND_TOOL,
+        params,
+        approved: false,
+        decisionInput: 'allow',
+      });
       return { block: true, blockReason: 'No pending approvals to allow.' };
     }
     for (const { moduleName, methodName } of pending) {
@@ -333,10 +632,28 @@ function handleRespondTool(
     const count = approvalQueue.approve(sessionKey);
     const rules = pending.map((p) => `${p.moduleName}.${p.methodName}`).join(', ');
     logger.info(`[${CLAWREINS_RESPOND_TOOL}] ALLOW for 15 min`, { sessionKey, rules, count });
+    logInterceptEvent({
+      eventType: 'approval_decision',
+      moduleName: 'ClawReins',
+      methodName: 'approval',
+      toolName: CLAWREINS_RESPOND_TOOL,
+      params,
+      approved: true,
+      decisionInput: 'allow',
+    });
     return { block: true, blockReason: `Approved for 15 minutes: ${rules}. Retry the blocked tool.` };
   }
 
   logger.warn(`[${CLAWREINS_RESPOND_TOOL}] Invalid decision: "${params.decision}"`, { sessionKey });
+  logInterceptEvent({
+    eventType: 'approval_decision',
+    moduleName: 'ClawReins',
+    methodName: 'approval',
+    toolName: CLAWREINS_RESPOND_TOOL,
+    params,
+    approved: false,
+    decisionInput: 'no',
+  });
   return {
     block: true,
     blockReason: 'Invalid decision. Use "yes", "no", "allow", or "confirm".',

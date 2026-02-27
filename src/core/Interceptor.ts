@@ -175,6 +175,7 @@ export class Interceptor {
     intervention?: InterventionMetadata
   ): string {
     const strict = intervention?.requiresExplicitConfirmation === true;
+    const requiresRespondToolApproval = intervention?.requiresRespondToolApproval === true;
     const summary = intervention?.actionSummary || `${moduleName}.${methodName}()`;
     const token = intervention?.confirmationToken || 'CONFIRM';
 
@@ -201,9 +202,18 @@ export class Interceptor {
       );
     }
 
+    if (requiresRespondToolApproval && !this.respondToolAvailable) {
+      return (
+        `${screenshotInstruction}` +
+        `This destructive action requires explicit channel approval via clawreins_respond, ` +
+        `but that tool is unavailable in this gateway. Do NOT execute ${moduleName}.${methodName}().`
+      );
+    }
+
     if (this.respondToolAvailable) {
       return (
         `${screenshotInstruction}` +
+        `Action summary: ${summary}\n` +
         `Ask the user: YES, NO, or ALLOW (auto-approve for 15 min).\n` +
         `- YES → clawreins_respond({ decision: "yes" }), then retry.\n` +
         `- NO → clawreins_respond({ decision: "no" }). Do NOT retry.\n` +
@@ -279,6 +289,7 @@ export class Interceptor {
           rule,
           sessionKey,
           intervention,
+          respondToolAvailable: this.respondToolAvailable,
         };
 
         const approved = await this.arbitrator.judge(context);
