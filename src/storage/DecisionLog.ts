@@ -18,6 +18,23 @@ export interface DecisionRecord {
   userId?: string;
   decisionTime: number; // milliseconds
   reason?: string;
+  eventType?:
+    | 'destructive_detected'
+    | 'approval_requested'
+    | 'approval_decision'
+    | 'tool_executed'
+    | 'tool_blocked';
+  tool?: string;
+  severity?: 'HIGH' | 'CATASTROPHIC';
+  reasons?: string[];
+  bulkCount?: number;
+  target?: string;
+  argsHash?: string;
+  summary?: string;
+  requireToken?: string;
+  approved?: boolean;
+  decisionInput?: 'yes' | 'allow' | 'no' | 'confirm';
+  confirmation?: string;
 }
 
 export class DecisionLog {

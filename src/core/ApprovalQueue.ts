@@ -9,6 +9,7 @@ export interface ApprovalRequestOptions {
   requiresExplicitConfirmation?: boolean;
   actionSummary?: string;
   confirmationToken?: string;
+  allowRetryAsApproval?: boolean;
 }
 
 export interface PendingApprovalInfo {
@@ -17,6 +18,7 @@ export interface PendingApprovalInfo {
   requiresExplicitConfirmation: boolean;
   actionSummary?: string;
   confirmationToken?: string;
+  allowRetryAsApproval: boolean;
 }
 
 interface ApprovalEntry extends PendingApprovalInfo {
@@ -95,6 +97,7 @@ export class ApprovalQueue {
       requiresExplicitConfirmation: options.requiresExplicitConfirmation ?? false,
       actionSummary: options.actionSummary,
       confirmationToken: options.confirmationToken,
+      allowRetryAsApproval: options.allowRetryAsApproval ?? true,
       status: 'pending',
       createdAt: Date.now(),
       expiresAt: Date.now() + this.ttl,
@@ -105,6 +108,7 @@ export class ApprovalQueue {
       sessionKey,
       action: `${moduleName}.${methodName}`,
       requiresExplicitConfirmation: entry.requiresExplicitConfirmation,
+      allowRetryAsApproval: entry.allowRetryAsApproval,
     });
     return k;
   }
@@ -141,6 +145,9 @@ export class ApprovalQueue {
     }
 
     if (entry.requiresExplicitConfirmation) {
+      return false;
+    }
+    if (!entry.allowRetryAsApproval) {
       return false;
     }
 
@@ -272,6 +279,7 @@ export class ApprovalQueue {
         requiresExplicitConfirmation: true,
         actionSummary: e.actionSummary,
         confirmationToken: e.confirmationToken,
+        allowRetryAsApproval: e.allowRetryAsApproval,
       }));
   }
 
