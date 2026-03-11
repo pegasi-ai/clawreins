@@ -1,7 +1,7 @@
 <div align="center">
   <img src="logo.png" alt="ClawReins Logo" width="360"/>
   <h1>🦞 + 🪢 ClawReins</h1>
-  <p><strong>Browser-aware, trajectory-aware, human-routable intervention for OpenClaw.</strong></p>
+  <p><strong>Runtime safety and human approval infrastructure for computer-using agents.</strong></p>
 
   <p>
     <a href="https://github.com/pegasi-ai/clawreins">github.com/pegasi-ai/clawreins</a>
@@ -14,25 +14,32 @@
   </p>
 </div>
 
-> OpenClaw is powerful. That's the problem.
+> OpenClaw is powerful. That's the problem. ClawReins is the watchdog layer.
 
-This is why we built ClawReins - because confirm before acting only works if you understand what the agent is actually doing.
+ClawReins sits between an AI agent and the real world. It’s the watchdog layer for computer-using agents. ClawReins protects agents at two stages:
 
-ClawReins is AI safety middleware for [OpenClaw](https://github.com/openclaw/openclaw). It goes beyond tool interception:
-- **Browser-state awareness**: detects CAPTCHA, 2FA, and challenge walls before actions continue
-- **Irreversibility scoring**: distinguishes risky actions from catastrophic ones
-- **Multi-turn simulation**: runs ToolShield-style sandbox tests on new tools before production
-- **Runtime intervention**: pauses, captures context, routes to human via WhatsApp/Telegram, resumes cleanly
+- Before runtime → security scanning
+- During runtime → action interception
+
+Think of it as `sudo` for AI agents. The first production integration is [OpenClaw](https://github.com/openclaw/openclaw). ClawReins plugs into the `before_tool_call` event and adds:
+
+- **Prevent** destructive actions before they execute
+- **Pause** for human approval with YES / ALLOW / CONFIRM flows
+- **Prove** what happened with durable audit logs and post-incident review
 
 **OpenClaw cannot be its own watchdog. Neither can any CUA.**
 
 ## Demo
 
-![ClawReins demo](./clawreins-demo.gif)
+![ClawReins demo](./public/clawreins-demo.gif)
 
-ClawReins prevents destructive actions by requiring explicit, time-boxed approval and logging every decision.  
-High-impact action gating: explicit approval -> safe stop -> audit trail.  
-Gmail automation is gated: ClawReins blocks destructive inbox actions unless you explicitly approve (`YES`/`ALLOW`).
+Hero example: an OpenClaw agent tries to bulk-delete 4,382 Gmail messages. ClawReins blocks it before execution.
+
+That is the core runtime story:
+- destructive action detected
+- execution paused before side effects
+- human approval required
+- decision written to the audit trail
 
 ## In The News
 
@@ -42,13 +49,26 @@ Gmail automation is gated: ClawReins blocks destructive inbox actions unless you
 
 ![ClawReins intercept example](./public/intercept_example.png)
 
+## Runtime Interception
+
+Runtime interception is the enforcement layer. It is what stops an agent mid-trajectory when the action is destructive, irreversible, or operating under risky browser state.
+
+Core capabilities:
+- Browser-state awareness for CAPTCHA, 2FA, and challenge walls
+- Irreversibility scoring for risky versus catastrophic actions
+- Runtime intervention across terminal and messaging approval channels
+- ToolShield-aligned hardening for new tool rollouts
+- Full audit logging for every approval decision
+
 ## Security Scan
 
-![ClawReins security scan](./public/security_scan.png)
+ClawReins includes a security scanner that audits the local OpenClaw environment for high-signal misconfigurations before runtime problems turn into incidents.
+
+![ClawReins security scan](./public/clawreins_security_scan.gif)
 
 `clawreins scan` audits a local OpenClaw installation for high-signal security misconfigurations, writes an HTML report to `~/Downloads/scan-report.html`, and prints a `file://` link directly in the terminal.
 
-Quick usage:
+Usage:
 
 ```bash
 # Run the 13-check audit and save the HTML report
@@ -65,15 +85,111 @@ clawreins scan --fix
 
 # Apply supported auto-fixes without prompting
 clawreins scan --fix --yes
+
+# Compare against the last saved baseline and alert on drift
+clawreins scan --monitor
+
+# Compare against the baseline and invoke a notifier when drift is detected
+clawreins scan --monitor --alert-command "/path/to/send-openclaw-alert.sh"
 ```
 
-Auto-fix currently supports:
+Supported auto-fixes:
 - Rebinding gateway host from `0.0.0.0` to `127.0.0.1`
 - Tightening config file permissions to `600`
 - Injecting a default `tools.exec.safeBins` allowlist
 - Disabling `authBypass` / `skipAuth` / `disableAuth` style flags
 
 Before any fix is applied, ClawReins creates a timestamped backup in `~/.scan-backup/`.
+
+### Drift Monitoring
+
+Drift monitoring is opt-in. It is designed for scheduled runs, not enabled by default.
+
+Default monitoring behavior:
+- disabled by default
+- run every 24 hours when scheduled
+- compare against `~/.openclaw/clawreins/scan-state.json`
+- alert only on worsened posture: verdict worsening, new `WARN`, or new `FAIL`
+- no background auto-fix
+- HTML report still written to `~/Downloads/scan-report.html`
+
+Manual run:
+
+```bash
+clawreins scan --monitor
+```
+
+The first run creates a baseline. Later runs compare the current report against that saved baseline and only alert when posture worsens.
+
+If you want scheduled jobs to notify through your own transport, add `--alert-command`. This command runs only when drift is detected. ClawReins exports these environment variables to the notifier:
+- `CLAWREINS_SCAN_SUMMARY`
+- `CLAWREINS_SCAN_VERDICT`
+- `CLAWREINS_SCAN_REPORT_PATH`
+- `CLAWREINS_SCAN_REPORT_URL`
+- `CLAWREINS_SCAN_STATE_PATH`
+- `CLAWREINS_SCAN_WORSENED_CHECKS`
+
+That makes it easy to route alerts through:
+- an OpenClaw messaging wrapper
+- a webhook sender
+- email, Slack, Telegram, or WhatsApp bridge scripts
+
+Notifier example:
+
+```bash
+clawreins scan --monitor \
+  --alert-command "$HOME/bin/send-openclaw-alert.sh"
+```
+
+The alert hook is generic on purpose. The scan CLI does not directly call the in-process OpenClaw plugin API from cron or system schedulers, so the notifier command is the bridge if you want alerts to land through OpenClaw-managed messaging.
+
+#### Scheduled Runs
+
+Recommended operating model:
+- run once per day
+- use `--monitor` so each run compares against the last saved baseline
+- add `--alert-command` if you want drift notifications delivered outside the terminal
+- never use `--fix` in scheduled jobs
+
+What happens on scheduled runs:
+1. The first scheduled run creates the baseline in `~/.openclaw/clawreins/scan-state.json`.
+2. Later runs compare the current `ScanReport` against that saved baseline.
+3. ClawReins alerts only when posture worsens: verdict gets worse, a check changes from `PASS` to `WARN`, or a check changes from `PASS` or `WARN` to `FAIL`.
+4. Every run still writes `~/Downloads/scan-report.html` so the latest full report is easy to inspect.
+
+Recommended scheduler settings:
+- frequency: every 24 hours
+- stdout/stderr: append to a dedicated log file such as `~/.openclaw/clawreins/scan-monitor.log`
+- environment: set `HOME` and `OPENCLAW_HOME` explicitly
+- notifier: use `--alert-command` for OpenClaw wrappers, webhooks, or messaging bridges
+
+Example daily job with drift logging only:
+
+```bash
+0 9 * * * /usr/bin/env \
+  HOME=$HOME \
+  OPENCLAW_HOME=$HOME/.openclaw \
+  /usr/local/bin/clawreins scan --monitor \
+  >> $HOME/.openclaw/clawreins/scan-monitor.log 2>&1
+```
+
+Example daily job with drift alert delivery:
+
+```bash
+0 9 * * * /usr/bin/env \
+  HOME=$HOME \
+  OPENCLAW_HOME=$HOME/.openclaw \
+  /usr/local/bin/clawreins scan --monitor \
+  --alert-command "$HOME/bin/send-openclaw-alert.sh" \
+  >> $HOME/.openclaw/clawreins/scan-monitor.log 2>&1
+```
+
+If you want the scheduled job to fail loudly for automation, the exit codes stay the same in monitor mode:
+- `0` for `SECURE`
+- `1` for `NEEDS ATTENTION`
+- `2` for `EXPOSED`
+
+That makes scheduled monitoring usable from `cron`, `systemd`, CI, or any wrapper that reacts to non-zero exit codes.
 
 ### Security Checks
 
@@ -106,15 +222,12 @@ ClawReins solves this by hooking into OpenClaw's `before_tool_call` plugin event
 
 ## Features
 
-- 🧭 **Browser State Awareness** - Detects likely CAPTCHA / Cloudflare / 2FA challenges (including iframe signals)
-- 🔐 **Irreversibility Scoring** - Scores each action (0-100) and escalates high-irreversibility actions to explicit confirmation
-- 🧠 **Memory Risk Forecasting** - Tracks drift/salami/commitment signals and predicts dangerous turn `N+1` trajectories
-- 🛡️ **ToolShield by Default** - `clawreins init` syncs ToolShield guardrails into OpenClaw instructions
-- ♻️ **Persistent Browser Sessions** - Reuses encrypted local auth/session state across agent runs
-- 💬 **Channel Support** - Works in terminal, WhatsApp, Telegram via `clawreins_respond` tool
-- 📊 **Full Audit Trail** - Every decision logged (JSON Lines format)
-- 🔎 **Security Scan + Auto-Fix** - Audits 13 common OpenClaw misconfigurations and can remediate the safe subset with backups
-- ⚡ **Zero Latency** - Runs in-process, no external policy API calls
+- **Prevent**
+  Stop destructive actions before execution, score irreversibility, detect risky browser state, and harden tool rollout with ToolShield-aligned guardrails.
+- **Pause**
+  Route high-impact actions through terminal or messaging approval flows, including explicit `CONFIRM-*` tokens for catastrophic operations.
+- **Prove**
+  Preserve audit logs, approval decisions, security scan findings, and post-fix artifacts so incidents are reviewable after the fact.
 
 ## Destructive Action Intercept (Pre-Execution)
 
@@ -301,6 +414,8 @@ clawreins upgrade     # Reinstall latest clawreins@beta in OpenClaw + restart ga
 clawreins update      # Alias for upgrade
 clawreins scan        # Run 13 security checks and save an HTML report
 clawreins scan --fix  # Backup config and apply supported remediations
+clawreins scan --monitor  # Compare with the last baseline and alert on drift
+clawreins scan --monitor --alert-command "/path/to/notifier.sh"  # Run a notifier on drift
 ```
 
 ## Example: View Audit Trail
@@ -341,6 +456,7 @@ All data stored in `~/.openclaw/clawreins/`:
 ├── policy.json       # Your security rules
 ├── decisions.jsonl   # Audit trail (append-only)
 ├── stats.json        # Statistics
+├── scan-state.json   # Last drift-monitoring baseline
 ├── browser-sessions.json  # Encrypted persistent browser auth/session state
 └── clawreins.log          # Application logs
 ```
