@@ -746,6 +746,11 @@ export class SecurityScanner {
 
   private withGatewayHostBoundLocal(value: unknown): Record<string, unknown> {
     const root = this.isRecord(value) ? { ...value } : {};
+
+    if (Object.prototype.hasOwnProperty.call(root, 'gateway') && !this.isRecord(root.gateway)) {
+      return root;
+    }
+
     const gateway = this.isRecord(root.gateway) ? { ...root.gateway } : {};
     const host = typeof gateway.host === 'string' ? gateway.host : undefined;
 

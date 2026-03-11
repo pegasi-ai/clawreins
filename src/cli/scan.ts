@@ -197,7 +197,7 @@ async function maybeOfferFix(
 }
 
 function renderNoFixesAvailable(report: ScanReport): void {
-  const unresolved = report.checks.filter((check) => check.status === 'FAIL');
+  const unresolved = report.checks.filter((check) => check.status === 'FAIL' || check.status === 'WARN');
 
   console.log('');
   console.log(chalk.bold('Fix Results:'));
@@ -272,6 +272,7 @@ async function maybeSendMonitorAlert(
   try {
     exitCode = await new Promise<number>((resolve, reject) => {
       const child = spawn(shell, shellArgs, {
+        detached: process.platform !== 'win32',
         env,
         stdio: 'ignore',
       });
@@ -283,7 +284,11 @@ async function maybeSendMonitorAlert(
         }
         settled = true;
         try {
-          child.kill();
+          if (process.platform !== 'win32' && typeof child.pid === 'number') {
+            process.kill(-child.pid, 'SIGTERM');
+          } else {
+            child.kill();
+          }
         } catch {
           // Ignore kill failures.
         }

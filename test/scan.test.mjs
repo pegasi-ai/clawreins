@@ -334,6 +334,64 @@ test('clawreins scan --fix --yes does not inject gateway config into unrelated J
   assert.deepEqual(updatedUnrelatedConfig, { theme: 'dark' });
 });
 
+test('clawreins scan --fix --yes does not overwrite non-object gateway values', () => {
+  const homeDir = makeTempRoot('clawreins-scan-fix-nonobject-gateway-home-');
+  const openclawHome = path.join(homeDir, '.openclaw');
+  const openclawConfig = path.join(openclawHome, 'openclaw.json');
+
+  writeJson(openclawConfig, {
+    gateway: null,
+    auth: { token: '${GATEWAY_TOKEN}' },
+    browser: { headless: true },
+    tools: {
+      exec: {
+        safeBins: ['ls'],
+      },
+    },
+    sandbox: true,
+    rateLimit: { maxRequests: 10 },
+  });
+  chmodSync(openclawConfig, 0o600);
+
+  const before = readFileSync(openclawConfig, 'utf8');
+  const result = runCli(['scan', '--fix', '--yes'], {
+    HOME: homeDir,
+    OPENCLAW_HOME: openclawHome,
+  });
+
+  assert.notEqual(result.status, null);
+  assert.match(result.stdout, /No supported auto-fixes for the current findings\./);
+  assert.equal(readFileSync(openclawConfig, 'utf8'), before);
+});
+
+test('clawreins scan --fix --yes lists WARN findings when no auto-fixes are available', () => {
+  const homeDir = makeTempRoot('clawreins-scan-fix-warn-only-home-');
+  const openclawHome = path.join(homeDir, '.openclaw');
+  const openclawConfig = path.join(openclawHome, 'openclaw.json');
+
+  writeJson(openclawConfig, {
+    gateway: { host: '127.0.0.1' },
+    auth: { token: '${GATEWAY_TOKEN}' },
+    browser: { headless: true },
+    tools: {
+      exec: {
+        safeBins: ['ls'],
+      },
+    },
+  });
+  chmodSync(openclawConfig, 0o600);
+
+  const result = runCli(['scan', '--fix', '--yes'], {
+    HOME: homeDir,
+    OPENCLAW_HOME: openclawHome,
+  });
+
+  assert.equal(result.status, 1, `stderr: ${result.stderr}`);
+  assert.match(result.stdout, /No supported auto-fixes for the current findings\./);
+  assert.match(result.stdout, /Manual review required for:/);
+  assert.match(result.stdout, /HTTPS_TLS:/);
+});
+
 test('clawreins scan --monitor creates a baseline state file on first run', () => {
   const homeDir = makeTempRoot('clawreins-scan-monitor-home-');
   const openclawHome = path.join(homeDir, '.openclaw');
